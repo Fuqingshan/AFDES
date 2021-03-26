@@ -47,6 +47,7 @@
 @implementation AFHTTPSessionManager
 @dynamic responseSerializer;
 
+/// - 工厂方法初始化
 + (instancetype)manager {
     return [[[self class] alloc] initWithBaseURL:nil];
 }
@@ -72,6 +73,7 @@
     }
 
     // Ensure terminal slash for baseURL path, so that NSURL +URLWithString:relativeToURL: works as expected
+    //如果baseURL没有以/结尾，调用+URLWithString:relativeToURL会出错，这儿进行纠错处理
     if ([[url path] length] > 0 && ![[url absoluteString] hasSuffix:@"/"]) {
         url = [url URLByAppendingPathComponent:@""];
     }
@@ -84,7 +86,7 @@
     return self;
 }
 
-#pragma mark -
+#pragma mark - 设置request和response 的 serializer
 
 - (void)setRequestSerializer:(AFHTTPRequestSerializer <AFURLRequestSerialization> *)requestSerializer {
     NSParameterAssert(requestSerializer);
@@ -100,6 +102,7 @@
 
 @dynamic securityPolicy;
 
+/// - 非https的情况下设置了pinning策略，直接抛异常
 - (void)setSecurityPolicy:(AFSecurityPolicy *)securityPolicy {
     if (securityPolicy.SSLPinningMode != AFSSLPinningModeNone && ![self.baseURL.scheme isEqualToString:@"https"]) {
         NSString *pinningMode = @"Unknown Pinning Mode";
@@ -248,7 +251,7 @@
     return dataTask;
 }
 
-
+#pragma mark - 这儿调用的requestSerializer
 - (NSURLSessionDataTask *)dataTaskWithHTTPMethod:(NSString *)method
                                        URLString:(NSString *)URLString
                                       parameters:(nullable id)parameters
@@ -259,7 +262,12 @@
                                          failure:(nullable void (^)(NSURLSessionDataTask * _Nullable task, NSError *error))failure
 {
     NSError *serializationError = nil;
+    /*这儿要注意URLWithString:relativeURL relativeToURL:baseURL
+     1、如果如果baseURL没有以"/"结尾，则最后一个"/"的内容都会被忽略
+     2、如果relativeURL以"/"开始，则被认为是从域名的根路径下开始，baseURL域名后的内容都会被忽略
+     */
     NSMutableURLRequest *request = [self.requestSerializer requestWithMethod:method URLString:[[NSURL URLWithString:URLString relativeToURL:self.baseURL] absoluteString] parameters:parameters error:&serializationError];
+    //请求头的配置
     for (NSString *headerField in headers.keyEnumerator) {
         [request setValue:headers[headerField] forHTTPHeaderField:headerField];
     }

@@ -23,9 +23,9 @@
 #import <Security/Security.h>
 
 typedef NS_ENUM(NSUInteger, AFSSLPinningMode) {
-    AFSSLPinningModeNone,
-    AFSSLPinningModePublicKey,
-    AFSSLPinningModeCertificate,
+    AFSSLPinningModeNone,//不适用固定证书验证服务端，直接从客户端系统受信任的CA列表验证
+    AFSSLPinningModePublicKey,//对服务器公钥的publicKey做验证，这种比较适合证书过期之后，新证书不换publicKey 的情况
+    AFSSLPinningModeCertificate,//全部都要和本地证书进行校验，包括有效期
 };
 
 /**
@@ -35,6 +35,37 @@ typedef NS_ENUM(NSUInteger, AFSSLPinningMode) {
  */
 
 NS_ASSUME_NONNULL_BEGIN
+
+/*https连接过程
+ 1、客户端把支持的ssl/tls（安全套接字协议和安全传输协议）版本等发给服务端
+ 2、服务端一般保存这公钥和私钥，公钥发给别人，私钥自己保存。服务端验证之后把公钥、数字证书、随机数发给客户端
+ 3、客户端通过数字证书验证公钥，最顶层是打入系统的CA认证根证书。
+ 3.5、这儿根据安全性要求，进行单向认证或双向认证，可能客户端要把证书和自己的公钥发给服务器，服务器做验证（双向）
+ 4、客户端把支持的对称加密算法发给服务端，服务端选择之后，如果之前有客户端的公钥，则用公钥加密发给客户端，如果没有，则明文发送
+ 5、客户端用自己的私钥解密之后，把加密秘钥用服务端的公钥加密，发给服务端
+ 5、服务端解密，对称秘钥进行数据加密通讯
+ 
+ 总结：数据通讯时用的是对称加密，加密速度快，非对称加密的是对称加密所需要的秘钥
+ 
+ 把https简化成两个人通信：
+ A有公钥和私钥，B也有公钥和私钥，AB的公钥是公开的。
+ A要给B发消息，就用B的公钥加密，发给B，B用私钥解密
+ B要给A发消息，就用A的公钥加密，发给A，A用私钥解密
+ 
+ 为了加快后续通讯的加解密速度，首次通讯时，A加密的信息就变成了对称加密的秘钥，然后发给B，B拿着这个秘钥之后，后续通讯就用这个秘钥来加解密了。
+ 
+ 这儿A就相当于服务端，B就是客户端。
+ 
+ 而数字证书就是为了防止中间人劫持，对数据进行篡改，用来做验证的。
+ 
+ 数字签名：A的公钥->hash成消息摘要->CA私钥加密->数字签名
+ 数字证书：A的公钥+数字签名
+ B拿到数字证书之后：
+ 1、A的公钥->hash成消息摘要
+ 2、通过CA的公钥解密数字签名->消息摘要
+ 3、对比两个摘要，验证公钥是否合法，公钥合法，那么对应的对称加密秘钥也就合法了
+
+ */
 
 @interface AFSecurityPolicy : NSObject <NSSecureCoding, NSCopying>
 

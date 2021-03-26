@@ -42,6 +42,7 @@ NS_ASSUME_NONNULL_BEGIN
 
  @warning Instances of `AFNetworkReachabilityManager` must be started with `-startMonitoring` before reachability status can be determined.
  */
+//网络状态监控
 @interface AFNetworkReachabilityManager : NSObject
 
 /**
@@ -50,6 +51,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly, nonatomic, assign) AFNetworkReachabilityStatus networkReachabilityStatus;
 
 /**
+ //
  Whether or not the network is currently reachable.
  */
 @property (readonly, nonatomic, assign, getter = isReachable) BOOL reachable;
@@ -69,6 +71,7 @@ NS_ASSUME_NONNULL_BEGIN
 ///---------------------
 
 /**
+ 这个返回的是单例
  Returns the shared network reachability manager.
  */
 + (instancetype)sharedManager;
@@ -81,6 +84,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)manager;
 
 /**
+ 指定域名创建manager
+ 
  Creates and returns a network reachability manager for the specified domain.
 
  @param domain The domain used to evaluate network reachability.
@@ -90,6 +95,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)managerForDomain:(NSString *)domain;
 
 /**
+ 根据socket地址获取reachability
+ 
  Creates and returns a network reachability manager for the socket address.
 
  @param address The socket address (`sockaddr_in6`) used to evaluate network reachability.
@@ -99,6 +106,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)managerForAddress:(const void *)address;
 
 /**
+ 根据SCNetworkReachabilityRef初始化，默认AFNetworkReachabilityStatus为unknown
+ 
  Initializes an instance of a network reachability manager from the specified reachability object.
 
  @param reachability The reachability object to monitor.

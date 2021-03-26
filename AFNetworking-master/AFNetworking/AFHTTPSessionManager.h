@@ -65,6 +65,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+//URLSession的HTTP版本
+
 @interface AFHTTPSessionManager : AFURLSessionManager <NSSecureCoding, NSCopying>
 
 /**
@@ -100,6 +102,8 @@ NS_ASSUME_NONNULL_BEGIN
 ///---------------------
 
 /**
+ 工厂模式创建，并非单例
+ 
  Creates and returns an `AFHTTPSessionManager` object.
  */
 + (instancetype)manager;

@@ -118,8 +118,10 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
     __weak __typeof__(task) weakTask = task;
     for (NSProgress *progress in @[ _uploadProgress, _downloadProgress ])
     {
+        //设置上传下载的期望数据不确定
         progress.totalUnitCount = NSURLSessionTransferSizeUnknown;
         progress.cancellable = YES;
+        //通过progress与task的状态绑定，只要progress触发cancel、pause、resume操作，task执行相同的操作
         progress.cancellationHandler = ^{
             [weakTask cancel];
         };
@@ -138,6 +140,7 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
             };
         }
         
+        //对progress进行监控，fractionCompleted表示任务完成度 0 ~ 1
         [progress addObserver:self
                    forKeyPath:NSStringFromSelector(@selector(fractionCompleted))
                       options:NSKeyValueObservingOptionNew
@@ -154,6 +157,7 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 #pragma mark - NSProgress Tracking
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSString *,id> *)change context:(void *)context {
+    //根据任务种类进行进度的回调
    if ([object isEqual:self.downloadProgress]) {
         if (self.downloadProgressBlock) {
             self.downloadProgressBlock(object);
@@ -170,6 +174,8 @@ static const void * const AuthenticationChallengeErrorKey = &AuthenticationChall
 
 #pragma mark - NSURLSessionTaskDelegate
 
+#pragma mark - 请求的回调，这儿会用到response 
+
 - (void)URLSession:(__unused NSURLSession *)session
               task:(NSURLSessionTask *)task
 didCompleteWithError:(NSError *)error
@@ -179,6 +185,15 @@ didCompleteWithError:(NSError *)error
 
     __block id responseObject = nil;
 
+    //userinfo的可以有这几种
+    /*
+     AFNetworkingTaskDidCompleteSerializedResponseKey 存储经过序列化的response
+     AFNetworkingTaskDidCompleteResponseSerializerKey 保存序列化response的serializer
+     AFNetworkingTaskDidCompleteResponseDataKey 存储原始的response data
+     AFNetworkingTaskDidCompleteErrorKey 错误信息
+     AFNetworkingTaskDidCompleteAssetPathKey 如果下载任务完成，数据已经被存储到磁盘，则保存磁盘的存储位置
+     AFNetworkingTaskDidCompleteSessionTaskMetrics 存储的网络指标，比如创建task时间、完成时间、重定向次数
+     */
     NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
     userInfo[AFNetworkingTaskDidCompleteResponseSerializerKey] = manager.responseSerializer;
 
@@ -207,6 +222,7 @@ didCompleteWithError:(NSError *)error
     if (error) {
         userInfo[AFNetworkingTaskDidCompleteErrorKey] = error;
 
+        //如果没有指定group和completionQueue，则group为af的，completionQueue为mainqueue
         dispatch_group_async(manager.completionGroup ?: url_session_manager_completion_group(), manager.completionQueue ?: dispatch_get_main_queue(), ^{
             if (self.completionHandler) {
                 self.completionHandler(task.response, responseObject, error);
@@ -219,8 +235,10 @@ didCompleteWithError:(NSError *)error
     } else {
         dispatch_async(url_session_manager_processing_queue(), ^{
             NSError *serializationError = nil;
+            //序列化成responseObject
             responseObject = [manager.responseSerializer responseObjectForResponse:task.response data:data error:&serializationError];
-
+            
+            //如果有下载的url，表明这是一次下载请求，则替换成文件存储位置
             if (self.downloadFileURL) {
                 responseObject = self.downloadFileURL;
             }
@@ -326,7 +344,7 @@ didFinishDownloadingToURL:(NSURL *)location
  *  - https://github.com/AFNetworking/AFNetworking/issues/2638
  *  - https://github.com/AFNetworking/AFNetworking/pull/2702
  */
-
+//这儿用static inline，可以防止反汇编之后的静态分析，比如Hopper
 static inline void af_swizzleSelector(Class theClass, SEL originalSelector, SEL swizzledSelector) {
     Method originalMethod = class_getInstanceMethod(theClass, originalSelector);
     Method swizzledMethod = class_getInstanceMethod(theClass, swizzledSelector);
@@ -422,11 +440,16 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return NSURLSessionTaskStateCanceling;
 }
 
+#pragma mark - 交换系统的resume和suspend，同时
 - (void)af_resume {
     NSAssert([self respondsToSelector:@selector(state)], @"Does not respond to state");
+    //理论上应该是suspend
     NSURLSessionTaskState state = [self state];
-    [self af_resume];
     
+    //当使用者调用系统的resume的时候，就是调用的af_resume，如果之前是暂停状态，调用resume之后，state就会变成running状态
+    [self af_resume];//这儿调用的是系统的resume
+    
+    //如果调用resume之前状态不是running，则通知manager
     if (state != NSURLSessionTaskStateRunning) {
         [[NSNotificationCenter defaultCenter] postNotificationName:AFNSURLSessionTaskDidResumeNotification object:self];
     }
@@ -434,9 +457,12 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 
 - (void)af_suspend {
     NSAssert([self respondsToSelector:@selector(state)], @"Does not respond to state");
+    //取出当前的状态，理论上应该是running
     NSURLSessionTaskState state = [self state];
+    //之前如果处于running状态，使用者调用suspend之后，就是调用的af_suspend，状态会变成暂停
     [self af_suspend];
     
+    //如果调用resume之前状态不是suspend，则通知manager
     if (state != NSURLSessionTaskStateSuspended) {
         [[NSNotificationCenter defaultCenter] postNotificationName:AFNSURLSessionTaskDidSuspendNotification object:self];
     }
@@ -478,12 +504,14 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return [self initWithSessionConfiguration:nil];
 }
 
+//初始化urlManager
 - (instancetype)initWithSessionConfiguration:(NSURLSessionConfiguration *)configuration {
     self = [super init];
     if (!self) {
         return nil;
     }
 
+    //如果使用者没有设置默认的configuration，则设置default
     if (!configuration) {
         configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
     }
@@ -491,21 +519,28 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     self.sessionConfiguration = configuration;
 
     self.operationQueue = [[NSOperationQueue alloc] init];
+    //这是为串行队列，因为苹果就是这样要求的
     self.operationQueue.maxConcurrentOperationCount = 1;
 
+    //默认response为json
     self.responseSerializer = [AFJSONResponseSerializer serializer];
 
+    //设置证书策略AFSSLPinningModeNone，表示直接信任https
     self.securityPolicy = [AFSecurityPolicy defaultPolicy];
 
 #if !TARGET_OS_WATCH
     self.reachabilityManager = [AFNetworkReachabilityManager sharedManager];
 #endif
 
+    //用来装delegate和task，taskID为key，delegate为value
     self.mutableTaskDelegatesKeyedByTaskIdentifier = [[NSMutableDictionary alloc] init];
-
+    
+    //这个锁是用来保证mutableTaskDelegatesKeyedByTaskIdentifier这个字典的数据安全的
     self.lock = [[NSLock alloc] init];
     self.lock.name = AFURLSessionManagerLockName;
 
+    //为了防止后台回来，重新初始化这个session，一些之前的后台请求任务，导致程序的crash。
+    //https://github.com/AFNetworking/AFNetworking/issues/3499
     [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
         for (NSURLSessionDataTask *task in dataTasks) {
             [self addDelegateForDataTask:task uploadProgress:nil downloadProgress:nil completionHandler:nil];
@@ -546,9 +581,11 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return [NSString stringWithFormat:@"%p", self];
 }
 
+//af中做了方法交换，当task触发resume和suspend时，会调用通知，AFNSURLSessionTaskDidResumeNotification 和 AFNSURLSessionTaskDidSuspendNotification，通知就会触发下面两个方法
 - (void)taskDidResume:(NSNotification *)notification {
     NSURLSessionTask *task = notification.object;
     if ([task respondsToSelector:@selector(taskDescription)]) {
+        //创建request的时候，就给task设置了manager的地址作为参照物
         if ([task.taskDescription isEqualToString:self.taskDescriptionForSessionTasks]) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [[NSNotificationCenter defaultCenter] postNotificationName:AFNetworkingTaskDidResumeNotification object:task];
@@ -568,7 +605,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     }
 }
 
-#pragma mark -
+#pragma mark - 用mutableTaskDelegatesKeyedByTaskIdentifier来装delegate，key为taskIdentifier
 
 - (AFURLSessionManagerTaskDelegate *)delegateForTask:(NSURLSessionTask *)task {
     NSParameterAssert(task);
@@ -581,6 +618,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return delegate;
 }
 
+//存储delegate，给task增加监听
 - (void)setDelegate:(AFURLSessionManagerTaskDelegate *)delegate
             forTask:(NSURLSessionTask *)task
 {
@@ -589,10 +627,14 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 
     [self.lock lock];
     self.mutableTaskDelegatesKeyedByTaskIdentifier[@(task.taskIdentifier)] = delegate;
+    
+    //给task添加暂停和继续使用的通知监听
     [self addNotificationObserverForTask:task];
     [self.lock unlock];
 }
 
+//manager -> session -> task ==> taskID -> delegate -> weak manager
+//这个操作由URLSessionManager完成
 - (void)addDelegateForDataTask:(NSURLSessionDataTask *)dataTask
                 uploadProgress:(nullable void (^)(NSProgress *uploadProgress)) uploadProgressBlock
               downloadProgress:(nullable void (^)(NSProgress *downloadProgress)) downloadProgressBlock
@@ -605,6 +647,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     dataTask.taskDescription = self.taskDescriptionForSessionTasks;
     [self setDelegate:delegate forTask:dataTask];
 
+    //设置上传下载的回调
     delegate.uploadProgressBlock = uploadProgressBlock;
     delegate.downloadProgressBlock = downloadProgressBlock;
 }
@@ -655,11 +698,15 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     [self.lock unlock];
 }
 
-#pragma mark -
+#pragma mark - 根据keypath获取所有与keypath相关的tasks
 
 - (NSArray *)tasksForKeyPath:(NSString *)keyPath {
     __block NSArray *tasks = nil;
+    //创建信号量, getTasksWithCompletionHandler本身是个异步方法，这儿就变成同步了
+
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    
+    //找到所有已经完成的任务，不包含因为完成、失败、cancel之后session失效的
     [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
         if ([keyPath isEqualToString:NSStringFromSelector(@selector(dataTasks))]) {
             tasks = dataTasks;
@@ -668,9 +715,10 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
         } else if ([keyPath isEqualToString:NSStringFromSelector(@selector(downloadTasks))]) {
             tasks = downloadTasks;
         } else if ([keyPath isEqualToString:NSStringFromSelector(@selector(tasks))]) {
+            //unionOfArrays：把各个数组的元素组合成新的数组,不去重
             tasks = [@[dataTasks, uploadTasks, downloadTasks] valueForKeyPath:@"@unionOfArrays.self"];
         }
-
+        
         dispatch_semaphore_signal(semaphore);
     }];
 
@@ -695,12 +743,14 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return [self tasksForKeyPath:NSStringFromSelector(_cmd)];
 }
 
-#pragma mark -
+#pragma mark - 使session无效化
 
 - (void)invalidateSessionCancelingTasks:(BOOL)cancelPendingTasks resetSession:(BOOL)resetSession {
     if (cancelPendingTasks) {
+        //使所有未完成的任务取消，之后无法继续使用。如果想为完成的任务继续完成，需要调用finishTasksAndInvalidate。sharesession使用此方法不生效
         [self.session invalidateAndCancel];
     } else {
+        //使session无效化，之后无法创建新task，但还在执行的task会继续直到完成，并调用URLSession：didBecomeInvalidWithError，sharesession使用此方法不生效
         [self.session finishTasksAndInvalidate];
     }
     if (resetSession) {
@@ -708,7 +758,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     }
 }
 
-#pragma mark -
+#pragma mark - 设置response
 
 - (void)setResponseSerializer:(id <AFURLResponseSerialization>)responseSerializer {
     NSParameterAssert(responseSerializer);
@@ -716,7 +766,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     _responseSerializer = responseSerializer;
 }
 
-#pragma mark -
+#pragma mark - task暂停和重用的通知
 - (void)addNotificationObserverForTask:(NSURLSessionTask *)task {
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(taskDidResume:) name:AFNSURLSessionTaskDidResumeNotification object:task];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(taskDidSuspend:) name:AFNSURLSessionTaskDidSuspendNotification object:task];
@@ -726,8 +776,8 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     [[NSNotificationCenter defaultCenter] removeObserver:self name:AFNSURLSessionTaskDidSuspendNotification object:task];
     [[NSNotificationCenter defaultCenter] removeObserver:self name:AFNSURLSessionTaskDidResumeNotification object:task];
 }
-
-#pragma mark -
+ 
+#pragma mark - 设置task 与 delegate绑定
 
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request
                                uploadProgress:(nullable void (^)(NSProgress *uploadProgress)) uploadProgressBlock
@@ -808,7 +858,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return downloadTask;
 }
 
-#pragma mark -
+#pragma mark - 上传和下载进度查看
 - (NSProgress *)uploadProgressForTask:(NSURLSessionTask *)task {
     return [[self delegateForTask:task] uploadProgress];
 }
@@ -817,7 +867,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return [[self delegateForTask:task] downloadProgress];
 }
 
-#pragma mark -
+#pragma mark - 设置各种block的回调
 
 - (void)setSessionDidBecomeInvalidBlock:(void (^)(NSURLSession *session, NSError *error))block {
     self.sessionDidBecomeInvalid = block;
@@ -916,6 +966,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 
 #pragma mark - NSURLSessionDelegate
 
+//session将要无效化，触发回调和通知
 - (void)URLSession:(NSURLSession *)session
 didBecomeInvalidWithError:(NSError *)error
 {
@@ -926,6 +977,7 @@ didBecomeInvalidWithError:(NSError *)error
     [[NSNotificationCenter defaultCenter] postNotificationName:AFURLSessionDidInvalidateNotification object:session];
 }
 
+//收到服务端的challenge 
 - (void)URLSession:(NSURLSession *)session
 didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler
@@ -933,8 +985,15 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     NSAssert(self.sessionDidReceiveAuthenticationChallenge != nil, @"`respondsToSelector:` implementation forces `URLSession:didReceiveChallenge:completionHandler:` to be called only if `self.sessionDidReceiveAuthenticationChallenge` is not nil");
 
     NSURLCredential *credential = nil;
+    /*
+     NSURLSessionAuthChallengeUseCredential = 0,       用户指定的证书
+     NSURLSessionAuthChallengePerformDefaultHandling = 1,      默认的处理方式
+     NSURLSessionAuthChallengeCancelAuthenticationChallenge = 2,  证书参数将会被忽略，同时取消全部的request
+     NSURLSessionAuthChallengeRejectProtectionSpace = 3, 证书参数忽略，同时取消本次challenge，并尝试下一次的ProtectionSpace
+     */
     NSURLSessionAuthChallengeDisposition disposition = self.sessionDidReceiveAuthenticationChallenge(session, challenge, &credential);
 
+    //将证书发给服务器
     if (completionHandler) {
         completionHandler(disposition, credential);
     }
@@ -950,6 +1009,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 {
     NSURLRequest *redirectRequest = request;
 
+    //将要触发重定向的回调
     if (self.taskWillPerformHTTPRedirection) {
         redirectRequest = self.taskWillPerformHTTPRedirection(session, task, response, request);
     }
@@ -964,32 +1024,38 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler
 {
+    //服务端默认为不信任
     BOOL evaluateServerTrust = NO;
+    //设置challenge为默认处理方式
     NSURLSessionAuthChallengeDisposition disposition = NSURLSessionAuthChallengePerformDefaultHandling;
     NSURLCredential *credential = nil;
 
     if (self.authenticationChallengeHandler) {
+        //使用者自己实现challenge的处理方式
         id result = self.authenticationChallengeHandler(session, task, challenge, completionHandler);
-        if (result == nil) {
+        
+        if (result == nil) {//如果没有实现，直接return
             return;
-        } else if ([result isKindOfClass:NSError.class]) {
+        } else if ([result isKindOfClass:NSError.class]) {//如果发生错误，直接取消全部request
             objc_setAssociatedObject(task, AuthenticationChallengeErrorKey, result, OBJC_ASSOCIATION_RETAIN);
             disposition = NSURLSessionAuthChallengeCancelAuthenticationChallenge;
-        } else if ([result isKindOfClass:NSURLCredential.class]) {
+        } else if ([result isKindOfClass:NSURLCredential.class]) {//如果拿到了证书，那就是使用者指定了证书
             credential = result;
             disposition = NSURLSessionAuthChallengeUseCredential;
-        } else if ([result isKindOfClass:NSNumber.class]) {
+        } else if ([result isKindOfClass:NSNumber.class]) {//如果是默认处理方式，且服务端可以信任，则设置服务端可信
             disposition = [result integerValue];
             NSAssert(disposition == NSURLSessionAuthChallengePerformDefaultHandling || disposition == NSURLSessionAuthChallengeCancelAuthenticationChallenge || disposition == NSURLSessionAuthChallengeRejectProtectionSpace, @"");
             evaluateServerTrust = disposition == NSURLSessionAuthChallengePerformDefaultHandling && [challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust];
         } else {
             @throw [NSException exceptionWithName:@"Invalid Return Value" reason:@"The return value from the authentication challenge handler must be nil, an NSError, an NSURLCredential or an NSNumber." userInfo:nil];
         }
-    } else {
+    } else {//使用af的处理challenge 的方式，直接验证服务端是否可信
         evaluateServerTrust = [challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust];
     }
 
+    //如果服务端可信
     if (evaluateServerTrust) {
+        //根据服务器信息和服务器域名验证是否可信任
         if ([self.securityPolicy evaluateServerTrust:challenge.protectionSpace.serverTrust forDomain:challenge.protectionSpace.host]) {
             disposition = NSURLSessionAuthChallengeUseCredential;
             credential = [NSURLCredential credentialForTrust:challenge.protectionSpace.serverTrust];
@@ -1006,6 +1072,7 @@ didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
     }
 }
 
+#pragma mark - 服务端证书验证出错的处理
 - (nonnull NSError *)serverTrustErrorForServerTrust:(nullable SecTrustRef)serverTrust url:(nullable NSURL *)url
 {
     NSBundle *CFNetworkBundle = [NSBundle bundleWithIdentifier:@"com.apple.CFNetwork"];

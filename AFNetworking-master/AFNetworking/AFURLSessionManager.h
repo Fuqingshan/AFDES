@@ -88,6 +88,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+//核心类，封装了和系统网络相关的API
 @interface AFURLSessionManager : NSObject <NSURLSessionDelegate, NSURLSessionTaskDelegate, NSURLSessionDataDelegate, NSURLSessionDownloadDelegate, NSSecureCoding, NSCopying>
 
 /**
@@ -96,7 +97,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly, nonatomic, strong) NSURLSession *session;
 
 /**
- The operation queue on which delegate callbacks are run.
+用户处理请求和回调的队列，是个串行队列
  */
 @property (readonly, nonatomic, strong) NSOperationQueue *operationQueue;
 
@@ -112,6 +113,8 @@ NS_ASSUME_NONNULL_BEGIN
 ///-------------------------------
 
 /**
+ 处理https相关的公钥和验证逻辑
+
  The security policy used by created session to evaluate server trust for secure connections. `AFURLSessionManager` uses the `defaultPolicy` unless otherwise specified.
  */
 @property (nonatomic, strong) AFSecurityPolicy *securityPolicy;
@@ -122,6 +125,8 @@ NS_ASSUME_NONNULL_BEGIN
 ///--------------------------------------
 
 /**
+ 网络状态监控
+
  The network reachability manager. `AFURLSessionManager` uses the `sharedManager` by default.
  */
 @property (readwrite, nonatomic, strong) AFNetworkReachabilityManager *reachabilityManager;
@@ -156,11 +161,15 @@ NS_ASSUME_NONNULL_BEGIN
 ///-------------------------------
 
 /**
+ 指定给使用者返回时的队列，operationQueue是af自己创建的，用于处理请求和回调之后的操作，这个是指定返回数据给使用者的队列
+
  The dispatch queue for `completionBlock`. If `NULL` (default), the main queue is used.
  */
 @property (nonatomic, strong, nullable) dispatch_queue_t completionQueue;
 
 /**
+ 使用者指定group，不设置默认为af创建
+
  The dispatch group for `completionBlock`. If `NULL` (default), a private dispatch group is used.
  */
 @property (nonatomic, strong, nullable) dispatch_group_t completionGroup;
@@ -179,6 +188,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithSessionConfiguration:(nullable NSURLSessionConfiguration *)configuration NS_DESIGNATED_INITIALIZER;
 
 /**
+
+ cancelPendingTasks： 使session无效化，YES 取消未完成的任务，NO 继续完成还未完成的任务
+ resetSession：重置为nil，内部session创建是懒加载加锁，不用担心（调用了这个方法之后，如果不重置为nil，原来的session已经不能用了，为啥不默认设置为nil呢）
+ 
  Invalidates the managed session, optionally canceling pending tasks and optionally resets given session.
  
  @param cancelPendingTasks  Whether or not to cancel pending tasks.
@@ -300,11 +313,14 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (nullable NSProgress *)downloadProgressForTask:(NSURLSessionTask *)task;
 
+#pragma mark - 设置 session delegate 相关的回调函数
 ///-----------------------------------------
 /// @name Setting Session Delegate Callbacks
 ///-----------------------------------------
 
 /**
+ 设置回调监听session无效化的代理方法，也可以走通知的方式，这种设置回调的好处是可以用callers查看调用点，直接设置属性的block不行
+ 
  Sets a block to be executed when the managed session becomes invalid, as handled by the `NSURLSessionDelegate` method `URLSession:didBecomeInvalidWithError:`.
 
  @param block A block object to be executed when the managed session becomes invalid. The block has no return value, and takes two arguments: the session, and the error related to the cause of invalidation.

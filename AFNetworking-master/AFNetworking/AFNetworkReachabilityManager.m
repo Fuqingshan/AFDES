@@ -49,10 +49,15 @@ NSString * AFStringFromNetworkReachabilityStatus(AFNetworkReachabilityStatus sta
 }
 
 static AFNetworkReachabilityStatus AFNetworkReachabilityStatusForFlags(SCNetworkReachabilityFlags flags) {
+    //网络可达（可以访问指定节点和名称）
     BOOL isReachable = ((flags & kSCNetworkReachabilityFlagsReachable) != 0);
+    //网络可达，但是必须先建立连接
     BOOL needsConnection = ((flags & kSCNetworkReachabilityFlagsConnectionRequired) != 0);
+    //网络可达，可以自动建立连接
     BOOL canConnectionAutomatically = (((flags & kSCNetworkReachabilityFlagsConnectionOnDemand ) != 0) || ((flags & kSCNetworkReachabilityFlagsConnectionOnTraffic) != 0));
+    //不需要用户提供账号密码等数据就可以建立连接
     BOOL canConnectWithoutUserInteraction = (canConnectionAutomatically && (flags & kSCNetworkReachabilityFlagsInterventionRequired) == 0);
+    //网络可达的情况下，如果不需要建立连接或不需要用户交互就可以建立连接，则认为网络ok
     BOOL isNetworkReachable = (isReachable && (!needsConnection || canConnectWithoutUserInteraction));
 
     AFNetworkReachabilityStatus status = AFNetworkReachabilityStatusUnknown;
@@ -72,6 +77,7 @@ static AFNetworkReachabilityStatus AFNetworkReachabilityStatusForFlags(SCNetwork
 }
 
 /**
+ *主线程中监听网络变化的回调和通知
  * Queue a status change notification for the main thread.
  *
  * This is done to ensure that the notifications are received in the same order
@@ -80,6 +86,7 @@ static AFNetworkReachabilityStatus AFNetworkReachabilityStatusForFlags(SCNetwork
  * the later update, resulting in the listener being left in the wrong state.
  */
 static void AFPostReachabilityStatusChange(SCNetworkReachabilityFlags flags, AFNetworkReachabilityStatusCallback block) {
+    //根据flags获取网络状态
     AFNetworkReachabilityStatus status = AFNetworkReachabilityStatusForFlags(flags);
     dispatch_async(dispatch_get_main_queue(), ^{
         AFNetworkReachabilityManager *manager = nil;
@@ -147,11 +154,13 @@ static void AFNetworkReachabilityReleaseCallback(const void *info) {
 + (instancetype)manager
 {
 #if (defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && __IPHONE_OS_VERSION_MIN_REQUIRED >= 90000) || (defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 101100)
+    //ipv6
     struct sockaddr_in6 address;
     bzero(&address, sizeof(address));
     address.sin6_len = sizeof(address);
     address.sin6_family = AF_INET6;
 #else
+    //ipv4
     struct sockaddr_in address;
     bzero(&address, sizeof(address));
     address.sin_len = sizeof(address);
@@ -166,6 +175,7 @@ static void AFNetworkReachabilityReleaseCallback(const void *info) {
         return nil;
     }
 
+    //引用reachability，assign没有所有权，为避免被释放，这儿retain了
     _networkReachability = CFRetain(reachability);
     self.networkReachabilityStatus = AFNetworkReachabilityStatusUnknown;
 
@@ -183,6 +193,7 @@ static void AFNetworkReachabilityReleaseCallback(const void *info) {
 - (void)dealloc {
     [self stopMonitoring];
     
+    //开局retainle，这儿检测发现没释放，需要手动release
     if (_networkReachability != NULL) {
         CFRelease(_networkReachability);
     }
@@ -205,16 +216,20 @@ static void AFNetworkReachabilityReleaseCallback(const void *info) {
 #pragma mark -
 
 - (void)startMonitoring {
+    //通过SCNetworkReachabilityUnscheduleFromRunLoop取消之前在mainrunloop的监听
     [self stopMonitoring];
 
     if (!self.networkReachability) {
         return;
     }
 
+    //为防止block中self被强引用，这儿先weak
     __weak __typeof(self)weakSelf = self;
     AFNetworkReachabilityStatusCallback callback = ^(AFNetworkReachabilityStatus status) {
+        //强引用weakSelf，避免提前析构
         __strong __typeof(weakSelf)strongSelf = weakSelf;
-
+        
+        //触发回调时重新设置status, 如果存在statusblock，就用block通知
         strongSelf.networkReachabilityStatus = status;
         if (strongSelf.networkReachabilityStatusBlock) {
             strongSelf.networkReachabilityStatusBlock(status);
@@ -222,11 +237,23 @@ static void AFNetworkReachabilityReleaseCallback(const void *info) {
         
         return strongSelf;
     };
-
+    
+    /*创建上下文
+     1、第一个参数版本号为0
+     2、info，指定回调参数，是一个c指针
+     3、对info做retain
+     4、对info做release
+     5、用来描述info的回调
+     */
     SCNetworkReachabilityContext context = {0, (__bridge void *)callback, AFNetworkReachabilityRetainCallback, AFNetworkReachabilityReleaseCallback, NULL};
+    
+    //为SCNetworkReachabilityRef设置回调，设置成功返回true
     SCNetworkReachabilitySetCallback(self.networkReachability, AFNetworkReachabilityCallback, &context);
+    
+    //添加到mainrunloop进行监听，模式为common
     SCNetworkReachabilityScheduleWithRunLoop(self.networkReachability, CFRunLoopGetMain(), kCFRunLoopCommonModes);
 
+    //异步发送一次当前的网络状态，优先级较低，AFPostReachabilityStatusChange中有对应的block回调和通知
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0),^{
         SCNetworkReachabilityFlags flags;
         if (SCNetworkReachabilityGetFlags(self.networkReachability, &flags)) {
